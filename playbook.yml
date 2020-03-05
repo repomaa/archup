@@ -10,6 +10,7 @@
       copy:
         dest: config.yml
         content: |
+          wipe: false # set to true if the entire disk should be wiped before
           hostname: archlinux
           time_zone: UTC
           enabled_locales:
@@ -246,6 +247,10 @@
         name: crypt-root
         state: closed
       ignore_errors: True
+
+    - name: Wipe disk
+      command: 'wipefs -a --force /dev/{{ device }}'
+      when: wipe
 
     - name: Partition disk
       parted:
