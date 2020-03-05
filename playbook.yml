@@ -301,6 +301,7 @@
         dev: '/dev/vg0/{{ item.name }}'
         fstype: '{{ item.fstype }}'
         opts: '-L {{ item.name }}'
+        force: '{{ wipe }}'
       loop: '{{ volumes }}'
 
     - name: Set boot partition fstype
@@ -311,6 +312,7 @@
       filesystem:
         dev: /dev/disk/by-partlabel/boot
         fstype: '{{ boot_fstype }}'
+        force: '{{ wipe }}'
         opts: '{{ efivars.stat.exists | ternary("-n BOOT", "-L boot") }}'
 
     - name: Mount root filesystem
