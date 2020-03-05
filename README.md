@@ -2,6 +2,8 @@
 
 (Very) quickly install a bootable arch system
 
+![demo](demo.gif)
+
 ## Features
 
 - Works from any unix environment (only requirement: python)
