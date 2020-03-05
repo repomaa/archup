@@ -17,5 +17,5 @@
 
 ## Usage
 
-1. `curl https://raw.githubusercontent.com/repomaa/archup/bootstrap.sh | sh`
+1. `curl https://raw.githubusercontent.com/repomaa/archup/master/bootstrap.sh | sh`
 2. Follow the intructions
