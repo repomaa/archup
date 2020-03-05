@@ -1,0 +1,617 @@
+---
+- hosts: localhost
+  tasks:
+    - name: check if config is present
+      stat:
+        path: config.yml
+      register: config_file
+
+    - name: write default config
+      copy:
+        dest: config.yml
+        content: |
+          hostname: archlinux
+          time_zone: UTC
+          enabled_locales:
+            - en_US.UTF-8
+          keyboard_layout: us
+          mirror: https://mirror.rackspace.com
+          device: sda
+          # luks_password: secret # define this to enable full disk encryption
+          ssd: true               # enable to allow discards for luks
+          # authorized_keys: |    # add public keys here line by line to enable sshd and root ssh access for given keys
+          root_password: secret
+          volumes:
+            - name: swap
+              fstype: swap
+              size: '{{ ansible_memtotal_mb }}M'
+              mount_point: none
+            - name: root
+              fstype: ext4
+              size: 20G
+              mount_point: /
+            - name: var
+              fstype: xfs
+              size: 30G
+              mount_point: /var
+            - name: home
+              fstype: xfs
+              mount_point: /home
+              size: 100%FREE
+          packages:
+            - base
+            - linux
+            - linux-firmware
+            - vim
+            - man
+      when: 'not config_file.stat.exists'
+
+    - name: Exit to allow editing config
+      fail:
+        msg: 'Edit config.yml to your liking and rerun'
+      when: 'not config_file.stat.exists'
+
+- hosts: localhost
+  vars_files:
+    - config.yml
+  tasks:
+    - name: Create tmpfs mount dir
+      file:
+        path: /root/tmpfs
+        state: directory
+
+    - name: Mount tmpfs
+      mount:
+        src: tmpfs
+        path: /root/tmpfs
+        fstype: tmpfs
+        state: mounted
+
+    - name: Set bootstrap image name
+      command: date +archlinux-bootstrap-%Y.%m.01-x86_64.tar.gz
+      register: bootstrap_image_name
+
+    - name: Set bootstrap image path
+      command: date +/archlinux/iso/%Y.%m.01/archlinux-bootstrap-%Y.%m.01-x86_64.tar.gz
+      register: bootstrap_image_path
+
+    - name: Import bootstrap image signing key
+      command: gpg --receive-keys --keyserver hkps://keyserver.ubuntu.com 4AA4767BBC9C4B1D18AE28B77F2D434B9741E8AC
+
+    - name: Fetch arch bootstrap image and signature
+      get_url:
+        url: '{{ mirror }}{{ item.path }}'
+        tmp_dest: /root/tmpfs
+        dest: '/root/tmpfs/{{ item.name }}'
+      loop:
+        - path: '{{ bootstrap_image_path.stdout }}'
+          name: '{{ bootstrap_image_name.stdout }}'
+        - path: '{{ bootstrap_image_path.stdout }}.sig'
+          name: '{{ bootstrap_image_name.stdout }}.sig'
+
+    - name: Verify bootstrap image signature
+      command: 'gpg --verify /root/tmpfs/{{ bootstrap_image_name.stdout }}.sig'
+
+    - name: Extract image
+      unarchive:
+        remote_src: true
+        dest: /root/tmpfs
+        src: '/root/tmpfs/{{ bootstrap_image_name.stdout }}'
+        creates: /root/tmpfs/root.x86_64
+
+    - name: Mount root to bootstrap image
+      mount:
+        src: /root/tmpfs/root.x86_64
+        path: /root/tmpfs/root.x86_64
+        state: mounted
+        fstype: none
+        opts: bind
+
+    - name: Mount proc into bootstrap image
+      mount:
+        path: /root/tmpfs/root.x86_64/proc
+        src: /proc
+        state: mounted
+        fstype: proc
+
+    - name: Mount sys, dev, run and resolv.conf to bootstrap image
+      mount:
+        path: '/root/tmpfs/root.x86_64{{ item }}'
+        src: '{{ item }}'
+        state: mounted
+        fstype: none
+        opts: make-rslave,rbind
+      loop:
+        - /sys
+        - /dev
+        - /run
+
+    - name: Copy resolve.conf to bootstrap image
+      copy:
+        remote_src: true
+        src: /etc/resolv.conf
+        dest: /root/tmpfs/root.x86_64/etc/resolv.conf
+
+    - name: Enable some mirrors
+      lineinfile:
+        path: /root/tmpfs/root.x86_64/etc/pacman.d/mirrorlist
+        regexp: '^\s*#\s*(Server = .*$)'
+        line: '\1'
+        backrefs: true
+      loop: [ 1, 2, 3 ]
+
+    - name: Wait for mtab to be present
+      wait_for:
+        path: /root/tmpfs/root.x86_64/etc/mtab
+
+    - name: Initialize pacman keyring
+      command: chroot /root/tmpfs/root.x86_64 pacman-key --init
+
+    - name: Populate pacman keyring
+      command: chroot /root/tmpfs/root.x86_64 pacman-key --populate
+
+    - name: Install python to bootstrap image
+      command: chroot /root/tmpfs/root.x86_64 pacman -Sy --noconfirm python
+      args:
+        creates:
+          - /root/tmpfs/root.x86_64/usr/bin/python
+
+    - name: Add bootstrap image to hosts
+      add_host:
+        name: bootstrap
+        ansible_host: /root/tmpfs/root.x86_64
+        ansible_connection: chroot
+
+- hosts: bootstrap
+  vars_files:
+    - config.yml
+  vars:
+    needed_packages:
+      - python
+      - lvm2
+  tasks:
+    - name: install dependencies
+      package:
+        name:
+          - reflector
+          - parted
+          - lvm2
+          - xfsprogs
+          - btrfs-progs
+          - dosfstools
+
+    - name: Check if booted in efi mode
+      stat:
+        path: /sys/firmware/efi/efivars
+      register: efivars
+
+    - name: Set partitions for BIOS boot
+      set_fact:
+        partitions:
+          - name: bios-boot
+            start: 0%
+            end: 1MiB
+            flags: bios_grub
+          - name: boot
+            start: 1MiB
+            end: 513MiB
+            flags: boot
+          - name: '{{ (luks_password is defined) | ternary("luks", "lvm") }}'
+            start: 513MiB
+            end: 100%
+      when: not efivars.stat.exists
+
+    - name: Set partitions for EFI boot
+      set_fact:
+        partitions:
+          - name: boot
+            start: 0%
+            end: 512MiB
+            flags: esp
+          - name: '{{ (luks_password is defined) | ternary("luks", "lvm") }}'
+            start: 512MiB
+            end: 100%
+      when: efivars.stat.exists
+
+    - name: Unmount proc, sys, dev and run in chroot
+      mount:
+        path: '/mnt{{ item }}'
+        state: unmounted
+      loop:
+        - /proc
+        - /sys
+        - /dev
+        - /run
+
+    - name: swapoff
+      command: swapoff -a
+
+    - name: Unmount boot partition
+      mount:
+        path: /mnt/boot
+        state: unmounted
+
+    - name: Unmount lvm volumes
+      mount:
+        path: '/mnt{{ item.mount_point }}'
+        state: unmounted
+      loop: '{{ volumes | json_query("@[?fstype != `swap`] | reverse(@)") }}'
+
+    - name: Deactivate lvm volume group
+      command: vgchange -a n vg0
+      ignore_errors: True
+
+    - name: Close any open luks device
+      luks_device:
+        name: crypt-root
+        state: closed
+      ignore_errors: True
+
+    - name: Partition disk
+      parted:
+        device: '/dev/{{ device }}'
+        label: gpt
+        name: '{{ item.name }}'
+        flags: '{{ item.flags | default(omit) }}'
+        number: '{{ index + 1 }}'
+        part_start: '{{ item.start }}'
+        part_end: '{{ item.end }}'
+        state: present
+      loop: '{{ partitions }}'
+      loop_control:
+        index_var: index
+
+    - name: Write luks keyfile
+      copy:
+        content: '{{ luks_password }}'
+        dest: /tmp/luks-key
+        mode: 0600
+      when: luks_password is defined
+
+    - name: Create and/or open luks device
+      luks_device:
+        device: '/dev/disk/by-partlabel/luks'
+        keyfile: /tmp/luks-key
+        name: crypt-root
+        state: opened
+      when: luks_password is defined
+
+    - name: Setup lvm volume group
+      lvg:
+        pvs: '{{ lvm_pv }}'
+        vg: vg0
+      vars:
+        lvm_pv: '{{ (luks_password is defined) | ternary("/dev/mapper/crypt-root", "/dev/disk/by-partlabel/lvm") }}'
+
+    - name: Setup lvm volumes
+      lvol:
+        vg: vg0
+        lv: '{{ item.name }}'
+        size: '{{ item.size }}'
+        shrink: false
+      loop: '{{ volumes }}'
+
+    - name: Setup filesystems on lvm
+      filesystem:
+        dev: '/dev/vg0/{{ item.name }}'
+        fstype: '{{ item.fstype }}'
+        opts: '-L {{ item.name }}'
+      loop: '{{ volumes }}'
+
+    - name: Set boot partition fstype
+      set_fact:
+        boot_fstype: '{{ efivars.stat.exists | ternary("vfat", "ext4") }}'
+
+    - name: Setup filesystem on boot partition
+      filesystem:
+        dev: /dev/disk/by-partlabel/boot
+        fstype: '{{ boot_fstype }}'
+        opts: '{{ efivars.stat.exists | ternary("-n BOOT", "-L boot") }}'
+
+    - name: Mount root filesystem
+      mount:
+        path: /mnt
+        src: /dev/vg0/root
+        state: mounted
+        fstype: ext4
+
+    - name: Create mount points
+      file:
+        path: '/mnt{{ item.mount_point }}'
+        state: directory
+        recurse: true
+        mode: 0755
+      loop: '{{ (volumes + [{"name": "boot", "mount_point": "/boot"}]) | json_query("@[?fstype!=`swap`]") }}'
+
+    - name: Mount lvm volumes
+      mount:
+        path: '/mnt{{ item.mount_point }}'
+        src: '/dev/vg0/{{ item.name }}'
+        fstype: '{{ item.fstype }}'
+        state: mounted
+      loop: '{{ volumes | json_query("@[?fstype != `swap`]") }}'
+
+    - name: Mount boot partition
+      mount:
+        path: /mnt/boot
+        src: /dev/disk/by-partlabel/boot
+        fstype: '{{ boot_fstype }}'
+        state: mounted
+
+    - name: Set has_swap fact
+      set_fact:
+        has_swap: '{{ volumes | json_query("@[?fstype==`swap`]") | length > 0 }}'
+
+    - name: Get swap lvol name
+      set_fact:
+        swap_lvol: '{{ volumes | json_query("@[?fstype==`swap`].name | [0]") }}'
+      when: has_swap
+
+    - name: swapon
+      command: swapon /dev/vg0/swap
+      when: has_swap
+
+    - name: Generate mirrorlist
+      command: reflector --score 10 --ipv4 --ipv6
+      register: reflector
+
+    - name: Apply mirrorlist
+      copy:
+        content: '{{ reflector.stdout }}'
+        dest: /etc/pacman.d/mirrorlist
+
+    - name: Run pacstrap
+      command:
+        argv: '{{ ["pacstrap", "/mnt"] + packages + needed_packages }}'
+
+    - name: Generate fstab
+      command: genfstab -L /mnt
+      register: fstab
+
+    - name: Write fstab
+      copy:
+        content: '{{ fstab.stdout}}'
+        dest: /mnt/etc/fstab
+
+    - name: Write mirrorlist to chroot
+      copy:
+        content: '{{ reflector.stdout }}'
+        dest: /mnt/etc/pacman.d/mirrorlist
+
+    - name: Mount proc into chroot
+      mount:
+        path: /mnt/proc
+        src: /proc
+        state: mounted
+        fstype: proc
+
+    - name: Mount sys, dev and run to chroot
+      mount:
+        path: '/mnt{{ item }}'
+        src: '{{ item }}'
+        state: mounted
+        fstype: none
+        opts: bind
+      loop:
+        - /sys
+        - /dev
+        - /run
+
+    - name: Copy resolv.conf to chroot
+      copy:
+        remote_src: true
+        src: /etc/resolv.conf
+        dest: /mnt/etc/resolv.conf
+
+    - name: Add chroot to hosts
+      add_host:
+        name: chroot
+        ansible_host: '{{ ansible_host }}/mnt'
+        ansible_connection: chroot
+
+- hosts: chroot
+  vars_files:
+    - config.yml
+  tasks:
+    - name: Check if booted in efi mode
+      stat:
+        path: /sys/firmware/efi/efivars
+      register: efivars
+
+    - name: Set time zone
+      file:
+        src: '/usr/share/zoneinfo/{{ time_zone }}'
+        path: /etc/localtime
+        state: link
+        force: true
+        follow: false
+
+    - name: Generate adjtime
+      command: hwclock --systohc
+      args:
+        creates: /etc/adjtime
+
+    - name: Enable locales
+      locale_gen:
+        name: '{{ item }}'
+      loop: '{{ enabled_locales }}'
+
+    - name: Set keyboard layout
+      copy:
+        content: |
+          KEYMAP={{ keyboard_layout }}
+        dest: /etc/vconsole.conf
+
+    - name: Install xfsprogs
+      package:
+        name: xfsprogs
+      when: volumes | json_query('@[?fstype==`xfs`]') | length > 0
+
+    - name: Setup mkinitcpio
+      copy:
+        content: |
+          MODULES=()
+          BINARIES=({{ (volumes | json_query('@[?fstype==`xfs`]') | length > 0) | ternary('/usr/bin/xfs_repair /usr/bin/fsck.ext4 /usr/bin/fsck.xfs', '') }} /usr/bin/sh)
+          FILES=()
+          HOOKS=(systemd autodetect modconf keyboard block {{ (luks_password is defined) | ternary('sd-encrypt', '') }} sd-lvm2 filesystems fsck)
+        dest: /etc/mkinitcpio.conf
+      register: mkinitcpio_config
+
+    - name: Write crypttab.initramfs
+      copy:
+        content: |
+          lvm PARTLABEL=luks none {{ ssd | ternary('discard', '') }}
+        dest: /etc/crypttab.initramfs
+      register: crypttab
+      when: luks_password is defined
+
+    - name: Make initramfs
+      command: mkinitcpio -P
+      when: mkinitcpio_config.changed or (crypttab is defined and crypttab.changed)
+
+    - name: Install grub package
+      package:
+        name: grub
+      when: not efivars.stat.exists
+
+    - name: Install grub bootloader
+      command: 'grub-install --target=i386-pc /dev/{{ device }}'
+      args:
+        creates: /boot/grub
+      when: not efivars.stat.exists
+      register: grub_install
+
+    - name: Set has_swap fact
+      set_fact:
+        has_swap: '{{ volumes | json_query("@[?fstype==`swap`]") | length > 0 }}'
+
+    - name: Get swap lvol name
+      set_fact:
+        swap_lvol: '{{ volumes | json_query("@[?fstype==`swap`].name | [0]") }}'
+      when: has_swap
+
+    - name: Set kernel flags
+      lineinfile:
+        path: /etc/default/grub
+        regex: '^\s*GRUB_CMDLINE_LINUX_DEFAULT\s*=\s*"([^"]*)"'
+        line: 'GRUB_CMDLINE_LINUX_DEFAULT="resume=/dev/vg0/{{ swap_lvol }} \1"'
+        backrefs: true
+      when: not efivars.stat.exists and has_swap
+      register: kernel_flags
+
+    - name: Generate grub config
+      command: grub-mkconfig -o /boot/grub/grub.cfg
+      args:
+        creates: /boot/grub/grub.cfg
+      when: not efivars.stat.exists and (grub_install.changed or kernel_flags.changed)
+
+    - name: Install systemd-boot
+      command: 'bootctl --path /boot install'
+      when: 'efivars.stat.exists'
+      ignore_errors: true
+
+    - name: Find installed kernels
+      find:
+        paths: /boot
+        patterns: 'vmlinuz-*'
+      register: vmlinuz
+      when: 'efivars.stat.exists'
+
+    - name: Find installed ucodes
+      find:
+        paths: /boot
+        patterns: '*-ucode.img'
+      register: ucode
+      when: 'efivars.stat.exists'
+
+    - name: Configure systemd-boot
+      copy:
+        content: |
+          default  arch-{{ vmlinuz.files[0].path | regex_replace('^.*-', '') }}
+          timeout  3
+          console-mode max
+          editor   no
+        dest: /boot/loader/loader.conf
+      when: 'efivars.stat.exists'
+
+    - name: Add systemd-boot entries
+      copy:
+        content: |
+          title Arch {{ item.path | regex_replace('^.*-', '') }}
+          linux /{{ item.path | regex_replace('^.*/', '') }}
+
+          {% for ucode_file in ucode.files %}
+
+          initrd /{{ ucode_file | regex_replace('^.*/', '') }}
+
+          {% endfor %}
+
+          initrd /{{ item.path | regex_replace('^.*/', '') | regex_replace('vmlinuz', 'initramfs') }}.img
+          options root=/dev/vg0/root rw {{ has_swap | ternary('resume=/dev/vg0/' + swap_lvol, '') }}
+        dest: /boot/loader/entries/arch-{{ item.path | regex_replace('^.*-', '') }}.conf
+      loop: '{{ vmlinuz.files | default([]) }}'
+
+    - name: Set hostname
+      copy:
+        dest: /etc/hostname
+        content: '{{ hostname }}'
+
+    - name: Set keyboard layout
+      copy:
+        dest: /etc/hostname
+        content: '{{ hostname }}'
+
+    - name: Setup root password
+      user:
+        name: root
+        password: '{{ root_password | password_hash("sha512") }}'
+
+    - name: Install openssh
+      package:
+        name: openssh
+      when: authorized_keys is defined
+
+    - name: Create .ssh directory for root user
+      file:
+        path: /root/.ssh
+        state: directory
+        mode: 0700
+      when: authorized_keys is defined
+
+    - name: Add authorized keys
+      copy:
+        dest: /root/.ssh/authorized_keys
+        content: '{{ authorized_keys }}'
+      when: authorized_keys is defined
+
+    - name: Enable sshd
+      service:
+        name: sshd
+        enabled: true
+      when: authorized_keys is defined
+
+    - name: Setup dhcp network
+      copy:
+        content: |
+          [Match]
+          Name=*
+
+          [Network]
+          DHCP=yes
+        dest: /etc/systemd/network/dhcp.network
+
+    - name: Enable systemd-networkd
+      service:
+        name: 'systemd-{{ item }}'
+        enabled: true
+      loop:
+        - networkd
+        - resolved
+
+    - name: Symlink systemd-resolved resolv.conf stub
+      file:
+        src: /run/systemd/resolve/stub-resolv.conf
+        path: /etc/resolv.conf
+        force: true
+        follow: false
+        state: link
