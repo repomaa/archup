@@ -45,8 +45,15 @@
             - linux-firmware
             - vim
             - man
+            - zsh
           services:
             - systemd-timesyncd
+          users:
+            - name: archup
+              password: secret
+              groups:
+                - network
+              shell: /usr/bin/zsh
       when: 'not config_file.stat.exists'
 
     - name: Exit to allow editing config
@@ -625,8 +632,16 @@
         follow: false
         state: link
 
+    - name: Add users
+      user:
+        name: '{{ item.name }}'
+        groups: '{{ item.groups }}'
+        password: '{{ item.password }}'
+        shell: '{{ item.shell }}'
+      loop: '{{ users | default([]) }}'
+
     - name: Enable additional services
       service:
         name: '{{ item }}'
         enabled: true
-      loop: '{{ services }}'
+      loop: '{{ services | default([]) }}'
