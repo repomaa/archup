@@ -636,7 +636,7 @@
       user:
         name: '{{ item.name }}'
         groups: '{{ item.groups }}'
-        password: '{{ item.password }}'
+        password: '{{ item.password | password_hash("sha512") }}'
         shell: '{{ item.shell }}'
       loop: '{{ users | default([]) }}'
 
