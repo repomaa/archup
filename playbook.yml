@@ -3,12 +3,12 @@
   tasks:
     - name: check if config is present
       stat:
-        path: config.yml
+        path: '{{ config }}'
       register: config_file
 
     - name: write default config
       copy:
-        dest: config.yml
+        dest: '{{ config }}'
         content: |
           wipe: false # set to true if the entire disk should be wiped before
           hostname: archlinux
@@ -58,12 +58,12 @@
 
     - name: Exit to allow editing config
       fail:
-        msg: 'Edit config.yml to your liking and rerun'
+        msg: 'Edit {{ config }} to your liking and rerun'
       when: 'not config_file.stat.exists'
 
 - hosts: localhost
   vars_files:
-    - config.yml
+    - '{{ config }}'
   tasks:
     - name: Create tmpfs mount dir
       file:
@@ -174,7 +174,7 @@
 
 - hosts: bootstrap
   vars_files:
-    - config.yml
+    - '{{ config }}'
   vars:
     needed_packages:
       - python
@@ -427,7 +427,7 @@
 
 - hosts: chroot
   vars_files:
-    - config.yml
+    - '{{ config }}'
   tasks:
     - name: Check if booted in efi mode
       stat:
