@@ -639,7 +639,7 @@
     - name: Ensure sudo is installed
       package:
         name: sudo
-      when: needs_sudo
+      when: needs_sudo | bool
 
     - name: Allow sudo for wheel group
       lineinfile:
@@ -648,7 +648,7 @@
         firstmatch: true
         line: '%wheel ALL=(ALL) ALL'
         validate: /usr/sbin/visudo -cf %s
-      when: needs_sudo
+      when: needs_sudo | bool
 
     - name: Enable additional services
       service:
