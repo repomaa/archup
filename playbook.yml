@@ -45,6 +45,8 @@
             - linux-firmware
             - vim
             - man
+          services:
+            - systemd-timesyncd
       when: 'not config_file.stat.exists'
 
     - name: Exit to allow editing config
@@ -622,3 +624,9 @@
         force: true
         follow: false
         state: link
+
+    - name: Enable additional services
+      service:
+        name: '{{ item }}'
+        enabled: true
+      loop: '{{ services }}'
