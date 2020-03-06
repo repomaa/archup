@@ -624,14 +624,6 @@
         - networkd
         - resolved
 
-    - name: Symlink systemd-resolved resolv.conf stub
-      file:
-        src: /run/systemd/resolve/stub-resolv.conf
-        path: /etc/resolv.conf
-        force: true
-        follow: false
-        state: link
-
     - name: Add users
       user:
         name: '{{ item.name }}'
@@ -663,3 +655,12 @@
         name: '{{ item }}'
         enabled: true
       loop: '{{ services | default([]) }}'
+
+    - name: Symlink systemd-resolved resolv.conf stub
+      file:
+        src: /run/systemd/resolve/stub-resolv.conf
+        path: /etc/resolv.conf
+        force: true
+        follow: false
+        state: link
+
