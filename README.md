@@ -21,3 +21,10 @@
 
 1. `curl https://raw.githubusercontent.com/repomaa/archup/master/bootstrap.sh | sh`
 2. Follow the intructions
+
+## Configuration
+
+By following the steps above archup will generate a default config for you to
+edit. If the `wipe` option is set to `false` and when no changes to volumes are
+made, you can safely rerun archup with the same configuration. Have a look at
+the [examples](examples/) to see what you can configure.
