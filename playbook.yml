@@ -257,8 +257,8 @@
         state: closed
       ignore_errors: True
 
-    - name: Wipe disk
-      command: 'wipefs -a --force /dev/{{ device }}'
+    - name: Wipe disk headers
+      command: 'wipefs -a --force /dev/{{ device }}*'
       when: wipe
 
     - name: Partition disk
