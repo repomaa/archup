@@ -1,0 +1,52 @@
+# This config provisions an arch installation complete with Wayland and Gnome.
+# Make sure to adjust the volume sizes (swap size in particular).
+
+wipe: false # set to true if the entire disk should be wiped before
+hostname: archup
+time_zone: Europe/Berlin
+enabled_locales:
+  - en_US.UTF-8
+keyboard_layout: us
+mirror: https://mirror.rackspace.com
+device: sda
+luks_password: secret # define this to enable full disk encryption
+ssd: true               # enable to allow discards for luks
+# authorized_keys: |    # add public keys here line by line to enable sshd and root ssh access for given keys
+root_password: secret
+volumes:
+  - name: swap
+    fstype: swap
+    size: '3925M'
+    mount_point: none
+  - name: root
+    fstype: ext4
+    size: 20G
+    mount_point: /
+  - name: var
+    fstype: xfs
+    size: 30G
+    mount_point: /var
+  - name: home
+    fstype: xfs
+    mount_point: /home
+    size: 100%FREE
+packages:
+  - base
+  - linux
+  - linux-firmware
+  - vim
+  - man
+  - zsh
+  - wayland
+  - gnome
+  - virtualbox-guest-modules-arch
+services:
+  - systemd-timesyncd
+  - gdm
+users:
+  - name: archup
+    password: secret
+    groups:
+      - network
+      - wheel
+    shell: /usr/bin/zsh
