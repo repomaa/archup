@@ -55,4 +55,5 @@ users:
     password: secret
     groups:
       - network
+      - wheel
     shell: /usr/bin/zsh
