@@ -640,6 +640,24 @@
         shell: '{{ item.shell }}'
       loop: '{{ users | default([]) }}'
 
+    - name: Check if sudo should be installed
+      set_fact:
+        needs_sudo: '(users is defined) and (users | json_query("@[?contains(groups, `wheel`)]") | length > 0)'
+
+    - name: Ensure sudo is installed
+      package:
+        name: sudo
+      when: needs_sudo
+
+    - name: Allow sudo for wheel group
+      lineinfile:
+        path: /etc/sudoers
+        insertafter: 'wheel'
+        firstmatch: true
+        line: '%wheel ALL=(ALL) ALL'
+        validate: /usr/sbin/visudo -cf %s
+      when: needs_sudo
+
     - name: Enable additional services
       service:
         name: '{{ item }}'
