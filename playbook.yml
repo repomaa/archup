@@ -48,6 +48,8 @@
             - zsh
           services:
             - systemd-timesyncd
+            - systemd-networkd
+            - systemd-resolved
           users:
             - name: archup
               password: secret
@@ -606,7 +608,7 @@
         enabled: true
       when: authorized_keys is defined
 
-    - name: Setup dhcp network
+    - name: Setup systemd dhcp network
       copy:
         content: |
           [Match]
@@ -615,14 +617,7 @@
           [Network]
           DHCP=yes
         dest: /etc/systemd/network/dhcp.network
-
-    - name: Enable systemd-networkd
-      service:
-        name: 'systemd-{{ item }}'
-        enabled: true
-      loop:
-        - networkd
-        - resolved
+      when: 'systemd-networkd' in services
 
     - name: Add users
       user:
@@ -663,4 +658,4 @@
         force: true
         follow: false
         state: link
-
+      when: 'systemd-networkd' in services

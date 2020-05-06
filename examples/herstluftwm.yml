@@ -4,7 +4,7 @@
 # (swap size in particular). For real hardware make sure to replace
 # xf86-video-vmware with a suitable driver for your GPU.
 
-wipe: false # set to true if the entire disk should be wiped before
+wipe: false # set to true if all partitions on the disk should be deleted
 hostname: archup
 time_zone: Europe/Berlin
 enabled_locales:
@@ -44,12 +44,13 @@ packages:
   - lightdm
   - lightdm-gtk-greeter
   - herbstluftwm
-  - virtualbox-guest-modules-arch
   - xf86-video-vmware
   - xterm
 services:
   - systemd-timesyncd
   - lightdm
+  - systemd-networkd
+  - systemd-resolved
 users:
   - name: archup
     password: secret
